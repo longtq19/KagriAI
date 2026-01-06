@@ -51,7 +51,7 @@ body {
 .sidebar-header {
     display: flex;
     align-items: center;
-    gap: 12px;
+    gap: 20px;
     padding-bottom: 20px;
     border-bottom: 1px solid rgba(255,255,255,0.1);
     margin-bottom: 20px;
@@ -82,6 +82,9 @@ body {
     align-items: center;
     gap: 8px;
 }
+.info-card p strong {
+    color: var(--primary-color);
+}
 
 /* Chat Area */
 .chat-area {
@@ -90,6 +93,11 @@ body {
     flex-direction: column;
     background-color: var(--bg-color);
     position: relative;
+}
+
+/* Show sidebar as default */
+.sidebar {
+    display: flex !important;
 }
 
 /* Header */
@@ -106,7 +114,7 @@ body {
 .header-info {
     display: flex;
     align-items: center;
-    gap: 12px;
+    gap: 24px;
 }
 
 .avatar-bot {
@@ -119,6 +127,31 @@ body {
     justify-content: center;
     color: white;
     font-size: 1.2rem;
+}
+
+.avatar-logo {
+    width: 40px;
+    height: 40px;
+    object-fit: contain;
+    background: #ffffff;
+    border-radius: 50%;
+    padding: 6px;
+    border: 1px solid #e2e8f0;
+}
+
+.logo-avatar {
+    width: auto;
+    height: 40px;
+    border-radius: 0;
+    background: none;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+.kagri-logo {
+    max-height: 40px;
+    width: auto;
+    object-fit: contain;
 }
 
 .status {
@@ -159,6 +192,16 @@ body {
 .icon-btn.active {
     color: var(--primary-color);
     background-color: rgba(0, 168, 89, 0.1);
+}
+
+/* Logo in sidebar/header */
+.logo-img {
+    height: 28px;
+    margin-right: 16px;
+    display: inline-block;
+}
+.logo-icon.hidden {
+    display: none;
 }
 
 /* Messages */
@@ -476,4 +519,159 @@ body {
 
 .btn-secondary:hover {
     background-color: var(--gray-300);
+}
+
+/* New Badge */
+.btn-new-badge {
+    position: relative;
+    /* Custom styling for the diagnose button to make it attractive */
+    background: linear-gradient(135deg, #00b894, #00cec9) !important;
+    color: white !important;
+    border-radius: 20px;
+    padding: 8px 16px !important;
+    margin-right: 8px;
+    box-shadow: 0 4px 15px rgba(0, 184, 148, 0.3);
+    border: none;
+    font-weight: 600;
+    gap: 8px;
+    overflow: visible; /* Ensure badge is seen */
+}
+
+.btn-new-badge:hover {
+    transform: translateY(-2px);
+    box-shadow: 0 6px 20px rgba(0, 184, 148, 0.4);
+    background: linear-gradient(135deg, #00cec9, #00b894) !important;
+}
+
+.new-badge {
+    position: absolute;
+    top: -10px;
+    right: -10px;
+    background-color: #ff4757;
+    color: white;
+    font-size: 0.6rem;
+    padding: 2px 6px;
+    border-radius: 10px;
+    font-weight: bold;
+    animation: pulse 2s infinite;
+    border: 2px solid white;
+    box-shadow: 0 2px 5px rgba(0,0,0,0.2);
+}
+
+@keyframes pulse {
+    0% { transform: scale(1); }
+    50% { transform: scale(1.1); }
+    100% { transform: scale(1); }
+}
+
+/* Diagnose Button */
+.diagnose-btn {
+    background: none;
+    border: none;
+    cursor: pointer;
+    padding: 10px;
+    color: var(--primary-color);
+    transition: all 0.2s;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 1.2rem;
+}
+
+.diagnose-btn:hover {
+    color: var(--primary-hover);
+    transform: scale(1.1);
+}
+
+/* Modal Enhancements */
+.modal-content.large {
+    max-width: 600px;
+    text-align: left;
+}
+
+.modal-info {
+    font-size: 0.9rem;
+    color: var(--text-color);
+    margin-bottom: 20px;
+    line-height: 1.6;
+}
+
+.modal-info ul {
+    margin-left: 20px;
+    margin-top: 8px;
+    margin-bottom: 8px;
+}
+
+.modal-footer {
+    display: flex;
+    justify-content: flex-end;
+    gap: 12px;
+}
+
+/* Diagnosis Results */
+.diagnosis-result {
+    margin-top: 10px;
+}
+
+.diagnosis-item {
+    background: #f8f9fa;
+    border-radius: 8px;
+    padding: 12px;
+    margin-bottom: 12px;
+    border-left: 4px solid var(--primary-color);
+}
+
+.diagnosis-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 8px;
+}
+
+.diagnosis-name {
+    font-weight: bold;
+    color: var(--text-color);
+}
+
+.diagnosis-prob {
+    font-size: 0.85rem;
+    color: var(--primary-color);
+    font-weight: bold;
+}
+
+.diagnosis-images {
+    display: flex;
+    gap: 8px;
+    overflow-x: auto;
+}
+
+.diagnosis-img {
+    width: 80px;
+    height: 80px;
+    border-radius: 4px;
+    object-fit: cover;
+    cursor: pointer;
+}
+
+/* Progress Steps */
+.progress-steps {
+    background: #f8f9fa;
+    border-radius: 8px;
+    padding: 10px 12px;
+    margin-bottom: 8px;
+    border-left: 4px solid var(--primary-color);
+}
+.progress-step {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 0.92rem;
+    color: var(--text-color);
+    padding: 4px 0;
+}
+.progress-step.done {
+    color: #2ecc71;
+}
+.final-answer {
+    margin-top: 6px;
 }

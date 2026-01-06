@@ -34,7 +34,9 @@ class LLMEngine:
             )
 
             async for output in stream:
-                token = output.get('response', '')
+                token = output.get("response", "")
+                if not token:
+                    continue
                 sentences = buffer.add_token(token)
                 for sentence in sentences:
                     yield {

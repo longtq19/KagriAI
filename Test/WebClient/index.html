@@ -11,30 +11,49 @@
 </head>
 <body>
     <div class="main-container">
-        <!-- Modal Selection -->
-        <div id="selection-modal" class="modal" style="display: none;">
+        <!-- Confirm Modal -->
+        <div id="confirm-modal" class="modal" style="display: none;">
+            <div class="modal-content large">
+                <h3>Lưu ý Chẩn đoán</h3>
+                <div class="modal-info">
+                    <p>Hiện tại Kagri hỗ trợ chẩn đoán các bệnh của:</p>
+                    <ul>
+                        <li><strong>Cây Sầu Riêng:</strong> Thán thư, Ung thư thân, Thối trái, Rệp sáp, Nấm hồng, Bồ hóng, Cháy lá chết ngọn, Xì mủ thân, Bọ trĩ, Vàng lá.</li>
+                        <li><strong>Cây Cà Phê:</strong> Gỉ sắt, Sâu vẽ bùa, Bệnh khô cành, Khỏe mạnh.</li>
+                    </ul>
+                    <p>Nếu bệnh không nằm trong danh sách này, việc chẩn đoán có thể không chính xác.</p>
+                    <p>Vui lòng liên hệ hotline <strong>0985.562.582</strong> hoặc truy cập website <strong>kagri.vn</strong> để được chuyên gia của công ty tư vấn chi tiết, kịp thời.</p>
+                    <p><strong>Hướng dẫn chụp ảnh:</strong> Chụp rõ nét vết bệnh, tập trung vào vùng lá/thân bị bệnh, tránh hậu cảnh rối. Hãy đảm bảo ảnh được chụp ở môi trường ánh sáng tốt, tránh ánh sáng trực tiếp vào vết bệnh. Khoảng cách tới vết bệnh phải đủ để đảm bảo toàn bộ vết đều được chụp. Khoảng 30 cm đến 50 cm.</p>
+                </div>
+                <div class="modal-footer">
+                    <button id="btn-confirm-agree" class="btn-primary">Đồng ý</button>
+                    <button id="btn-confirm-cancel" class="btn-secondary">Hủy bỏ</button>
+                </div>
+            </div>
+        </div>
+
+        <!-- Tree Selection Modal -->
+        <div id="tree-modal" class="modal" style="display: none;">
             <div class="modal-content">
-                <h3>Xác nhận ảnh</h3>
-                <p>Bạn muốn làm gì với ảnh này?</p>
+                <h3>Chọn loại cây</h3>
+                <p>Vui lòng chọn loại cây bạn muốn chẩn đoán:</p>
                 <div class="modal-actions">
-                    <button id="btn-diagnose" class="btn-primary">Chẩn đoán bệnh cây sầu riêng</button>
-                    <button id="btn-incorrect" class="btn-secondary">Không đúng</button>
+                    <button class="btn-primary" onclick="selectTree('durian')">Cây Sầu Riêng</button>
+                    <button class="btn-primary" onclick="selectTree('coffee')">Cây Cà Phê</button>
+                    <button class="btn-secondary" onclick="closeTreeModal()">Hủy</button>
                 </div>
             </div>
         </div>
 
         <!-- Sidebar (Optional for future, currently hidden on mobile) -->
         <aside class="sidebar">
-            <div class="sidebar-header">
-                <i class="fas fa-leaf logo-icon"></i>
-                <h2>Kagri AI</h2>
-            </div>
             <div class="sidebar-content">
                 <div class="info-card">
-                    <h3>Về KAGRI</h3>
+                    <p><strong>Công ty Cổ phần Tập đoàn Nông nghiệp KAGRI</strong></p>
                     <p><i class="fas fa-map-marker-alt"></i> Trâu Quỳ, Gia Lâm, Hà Nội</p>
                     <p><i class="fas fa-phone"></i> 0985.562.582</p>
                     <p><i class="fas fa-envelope"></i> contact@kagri.vn</p>
+                    <p><i class="fas fa-globe"></i> https://kagri.vn</p>
                 </div>
             </div>
         </aside>
@@ -43,15 +62,15 @@
         <main class="chat-area">
             <header class="chat-header">
                 <div class="header-info">
-                    <div class="avatar-bot">
-                        <i class="fas fa-robot"></i>
-                    </div>
                     <div>
-                        <h3>Trợ lý KAGRI</h3>
+                        <h3>KAGRI AI</h3>
                         <div class="status">
                             <span id="status-dot" class="dot disconnected"></span>
                             <span id="status-text">Đang kết nối...</span>
                         </div>
+                    </div>
+                    <div class="logo-avatar">
+                        <img src="KAGRI-logo_vn-300x53.webp" alt="KAGRI AI Logo" class="kagri-logo" onerror="this.style.display='none';">
                     </div>
                 </div>
                 <div class="header-actions">
@@ -78,14 +97,14 @@
                     <button class="suggestion-chip" onclick="sendSuggestion('Thông tin công ty')">
                         🏢 Thông tin công ty
                     </button>
-                    <button class="suggestion-chip" onclick="sendSuggestion('Danh sách sản phẩm trị rầy')">
-                        🐛 Sản phẩm trị rầy
+                    <button class="suggestion-chip" onclick="sendSuggestion('Đội ngũ chuyên gia')">
+                        👨‍🔬 Đội ngũ chuyên gia
                     </button>
-                    <button class="suggestion-chip" onclick="sendSuggestion('Tư vấn kỹ thuật bón phân')">
-                        🌱 Kỹ thuật bón phân
+                    <button class="suggestion-chip" onclick="sendSuggestion('Chẩn đoán bệnh cây trồng qua hình ảnh')">
+                        🩺 Chẩn đoán bệnh cây trồng qua hình ảnh
                     </button>
-                    <button class="suggestion-chip" onclick="sendSuggestion('Các sản phẩm mới nhất')">
-                        🆕 Sản phẩm mới
+                    <button class="suggestion-chip" onclick="sendSuggestion('Các sản phẩm')">
+                        📦 Các sản phẩm
                     </button>
                 </div>
             </div>
@@ -93,9 +112,11 @@
             <div class="chat-input-container">
                 <div class="image-preview" id="image-preview"></div>
                 <div class="input-wrapper">
-                    <label for="image-upload" class="attach-btn" title="Gửi ảnh">
-                        <i class="fas fa-image"></i>
-                    </label>
+                    <button id="btn-open-diagnose" class="attach-btn btn-new-badge" title="Chẩn đoán bệnh cây trồng qua ảnh">
+                        <i class="fas fa-stethoscope"></i>
+                        <span>Chẩn đoán bệnh cây trồng qua ảnh</span>
+                        <span class="new-badge">Mới</span>
+                    </button>
                     <input type="file" id="image-upload" accept="image/*" hidden>
                     
                     <textarea id="message-input" placeholder="Nhập câu hỏi của bạn..." rows="1"></textarea>
@@ -111,6 +132,6 @@
         </main>
     </div>
 
-    <script src="app.js?v=4"></script>
+    <script src="app.js?v=13"></script>
 </body>
 </html>

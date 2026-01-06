@@ -3,8 +3,9 @@ const __params = new URLSearchParams(window.location.search);
 // const WS_URL = __params.get('ws') || 'ws://localhost:8000/ws/chat';
 // const TTS_URL_BASE = __params.get('tts') || 'http://localhost:5050';
 
-const WS_URL = __params.get('ws') || 'ws://localhost:8000/ws/kagri-ai';
-const TTS_URL_BASE = __params.get('tts') || 'http://localhost:5500';
+const WS_URL = __params.get('ws') || 'ws://127.0.0.1:8001/ws/kagri-ai';
+console.log('Connecting to WebSocket:', WS_URL);
+const TTS_URL_BASE = __params.get('tts') || 'http://127.0.0.1:5500';
 // const MODEL_URL = __params.get('model') || 'http://localhost:8000/models/durain/model.json';
 // const META_URL = __params.get('meta') || 'http://localhost:8000/models/durain/metadata.json';
 
@@ -17,15 +18,22 @@ const imagePreview = document.getElementById('image-preview');
 const statusDot = document.getElementById('status-dot');
 const statusText = document.getElementById('status-text');
 const suggestionsContainer = document.getElementById('suggestions');
-const selectionModal = document.getElementById('selection-modal');
-const btnDiagnose = document.getElementById('btn-diagnose');
-const btnIncorrect = document.getElementById('btn-incorrect');
+// const selectionModal = document.getElementById('selection-modal'); // Removed
+const confirmModal = document.getElementById('confirm-modal');
+const treeModal = document.getElementById('tree-modal');
+const btnOpenDiagnose = document.getElementById('btn-open-diagnose');
+const btnConfirmAgree = document.getElementById('btn-confirm-agree');
+const btnConfirmCancel = document.getElementById('btn-confirm-cancel');
+// const btnDiagnose = document.getElementById('btn-diagnose'); // Removed
+// const btnIncorrect = document.getElementById('btn-incorrect'); // Removed
 
 // State
 let ws = null;
 let conversationId = 'user_' + Math.random().toString(36).substr(2, 9);
 let currentImageBase64 = null;
+let isDiagnosisMode = false;
 let isGenerating = false;
+const BACKEND_URL = "http://localhost:8001"; // Define backend URL
 let currentBotMessageDiv = null;
 let currentBotMessageContent = "";
 let typingQueue = [];
@@ -42,8 +50,20 @@ let pendingOutbox = [];
 let diseaseModel = null;
 let modelLabels = [];
 let currentPredictedLabel = null;
+let responseTimer = null;
 
 // Initialize
+function toggleTTS() {
+    isTTSEnabled = !isTTSEnabled;
+    if (!isTTSEnabled) {
+        ttsQueue = [];
+        pendingDisplayQueue = [];
+        isTTSPlaying = false;
+        ttsBuffer = "";
+        currentAudio = null;
+    }
+}
+
 function init() {
     // Configure Marked.js for proper line breaks
     if (typeof marked !== 'undefined') {
@@ -55,7 +75,6 @@ function init() {
 
     connectWebSocket();
     setupEventListeners();
-    if (!isTTSEnabled) toggleTTS();
     loadDiseaseModel();
 }
 
@@ -265,7 +284,8 @@ async function processTTSQueue() {
                     currentBotMessageContent += char;
                     if (currentBotMessageDiv) {
                         const contentDiv = currentBotMessageDiv.querySelector('.message-content');
-                        contentDiv.innerHTML = marked.parse(currentBotMessageContent);
+                        const answerDiv = contentDiv.querySelector('.final-answer') || contentDiv;
+                        answerDiv.innerHTML = marked.parse(currentBotMessageContent);
                         scrollToBottom();
                     }
                     setTimeout(typeChar, charDelay);
@@ -415,7 +435,12 @@ function connectWebSocket() {
         console.error('WebSocket Error:', error);
         console.error('WebSocket URL:', WS_URL);
         console.error('ReadyState:', ws.readyState);
-        ws.close();
+        // Prevent false timeout message
+        if (responseTimer) { clearTimeout(responseTimer); responseTimer = null; }
+        isGenerating = false;
+        updateSendButtonState();
+        // Attempt reconnect; onclose handler will kick in
+        try { ws.close(); } catch (e) {}
     };
 
     ws.onmessage = (event) => {
@@ -446,9 +471,21 @@ function setupEventListeners() {
     // Image Upload
     imageUpload.addEventListener('change', handleImageUpload);
 
-    // Modal Listeners
-    if (btnDiagnose) btnDiagnose.addEventListener('click', confirmDiagnose);
-    if (btnIncorrect) btnIncorrect.addEventListener('click', rejectDiagnose);
+    // Diagnosis Flow
+    if (btnOpenDiagnose) btnOpenDiagnose.addEventListener('click', () => {
+        confirmModal.style.display = 'flex';
+    });
+
+    if (btnConfirmAgree) btnConfirmAgree.addEventListener('click', () => {
+        confirmModal.style.display = 'none';
+        isDiagnosisMode = true;
+        imageUpload.click();
+    });
+
+    if (btnConfirmCancel) btnConfirmCancel.addEventListener('click', () => {
+        confirmModal.style.display = 'none';
+        isDiagnosisMode = false;
+    });
 }
 
 // Handle Image Upload
@@ -465,7 +502,8 @@ function handleImageUpload(e) {
                 <button class="remove-btn" onclick="removeImage()">×</button>
             </div>
         `;
-        predictLabel(currentImageBase64).then(l => { currentPredictedLabel = l; }).catch(() => { currentPredictedLabel = null; });
+        // Predict client side label if needed, but we rely on backend now for diagnosis
+        // predictLabel(currentImageBase64).then(l => { currentPredictedLabel = l; }).catch(() => { currentPredictedLabel = null; });
     };
     reader.readAsDataURL(file);
     imageUpload.value = '';
@@ -475,6 +513,7 @@ function handleImageUpload(e) {
 window.removeImage = function() {
     currentImageBase64 = null;
     imagePreview.innerHTML = '';
+    isDiagnosisMode = false; // Reset mode if image is removed
 };
 
 // Send Message
@@ -484,31 +523,102 @@ function sendMessage(text = null) {
     const content = text || messageInput.value.trim();
     if (!content && !currentImageBase64) return;
     
-    // Check for image interception if there's an image
-    // If text is present, we still might want to show modal if the intention is ambiguous?
-    // Requirement: "khi ngừoi dùng ấn vào gửi ảnh, tải ảnh lên sẽ hiện ra nút chọn"
-    // It implies whenever image is sent.
-    if (currentImageBase64) {
-        if (selectionModal) {
-            selectionModal.style.display = 'flex';
-            return;
-        }
+    // Check if in diagnosis mode with image
+    if (currentImageBase64 && isDiagnosisMode) {
+        // Show Tree Selection
+        treeModal.style.display = 'flex';
+        return;
     }
     
     processMessageSend(content, currentImageBase64);
 }
 
-function confirmDiagnose() {
-    if (selectionModal) selectionModal.style.display = 'none';
-    const content = messageInput.value.trim();
-    processMessageSend(content, currentImageBase64);
+// Tree Selection Logic
+window.selectTree = function(treeType) {
+    treeModal.style.display = 'none';
+    diagnoseDisease(treeType);
 }
 
-function rejectDiagnose() {
-    if (selectionModal) selectionModal.style.display = 'none';
-    removeImage();
-    alert("Hiện tại, model chỉ hỗ trợ chẩn đoán bệnh, chưa hỗ trợ tác vụ khác.");
+window.closeTreeModal = function() {
+    treeModal.style.display = 'none';
 }
+
+async function diagnoseDisease(treeType) {
+    // Show loading state
+    isGenerating = true;
+    updateSendButtonState();
+    
+    // Add User Message with Image
+    const content = messageInput.value.trim();
+    addMessage(content || ("Chẩn đoán bệnh cho cây " + (treeType === 'durian' ? 'Sầu Riêng' : 'Cà Phê')), 'user', currentImageBase64);
+    
+    // Clear input
+    messageInput.value = '';
+    messageInput.style.height = 'auto';
+    
+    const loadingMsg = addMessage("", 'bot');
+    loadingMsg.querySelector('.message-content').innerHTML = '<div class="typing-indicator">...</div>';
+    
+    try {
+        const response = await fetch(`${BACKEND_URL}/api/diagnose/${treeType}`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ image: currentImageBase64 })
+        });
+        
+        const result = await response.json();
+        
+        // Render Result
+        renderDiagnosisResult(loadingMsg, result);
+        
+    } catch (e) {
+        loadingMsg.querySelector('.message-content').textContent = "Lỗi kết nối server: " + e.message;
+    } finally {
+        isGenerating = false;
+        updateSendButtonState();
+        removeImage(); // This resets isDiagnosisMode
+    }
+}
+
+function renderDiagnosisResult(msgDiv, result) {
+    const contentDiv = msgDiv.querySelector('.message-content');
+    if (result.error) {
+        contentDiv.textContent = "Lỗi: " + result.error;
+        return;
+    }
+    
+    let html = `<p><strong>Kết quả chẩn đoán:</strong></p>`;
+    if (result.predictions && result.predictions.length > 0) {
+        result.predictions.forEach(p => {
+            html += `
+            <div class="diagnosis-item">
+                <div class="diagnosis-header">
+                    <span class="diagnosis-name">${p.name}</span>
+                    <span class="diagnosis-prob">${p.probability}%</span>
+                </div>
+                <div class="diagnosis-images">
+                    ${p.images.map(url => `<img src="${BACKEND_URL}${url}" class="diagnosis-img" onclick="window.open(this.src, '_blank')">`).join('')}
+                </div>
+            </div>`;
+        });
+    } else {
+        html += "<p>Không tìm thấy bệnh phù hợp hoặc cây khỏe mạnh.</p>";
+    }
+    contentDiv.innerHTML = html;
+    scrollToBottom();
+}
+
+function updateSendButtonState() {
+    if (isGenerating) {
+        sendBtn.disabled = true;
+        sendBtn.innerHTML = '<i class="fas fa-spinner fa-spin"></i>';
+    } else {
+        sendBtn.disabled = false;
+        sendBtn.innerHTML = '<i class="fas fa-paper-plane"></i>';
+    }
+}
+
+/* Old functions removed */
 
 function processMessageSend(content, imageToSend) {
     // Remove suggestions if visible
@@ -530,7 +640,22 @@ function processMessageSend(content, imageToSend) {
     messageInput.value = '';
     messageInput.style.height = 'auto';
 
-    // Prepare Payload
+    // Prepare Bot Message Placeholder BEFORE sending to handle early progress packets
+    isGenerating = true;
+    updateSendButtonState();
+    isStreamFinished = false; // Reset stream status
+    currentBotMessageContent = "";
+    typingQueue = [];
+    pendingDisplayQueue = [];
+    // syncQueue = []; // Was not defined in original file, removing to avoid error if strict mode
+    if (typingTimer) clearTimeout(typingTimer);
+    isTyping = false;
+    
+    currentBotMessageDiv = addMessage("", 'bot'); // Empty initially
+    
+    // Waiting state removed
+    
+    // Prepare Payload and send
     if (imageToSend) {
         const payload = {
             type: "image_query",
@@ -552,27 +677,16 @@ function processMessageSend(content, imageToSend) {
     }
     removeImage();
 
-    // Prepare Bot Message Placeholder
-    isGenerating = true;
-    isStreamFinished = false; // Reset stream status
-    currentBotMessageContent = "";
-    typingQueue = [];
-    pendingDisplayQueue = [];
-    // syncQueue = []; // Was not defined in original file, removing to avoid error if strict mode
-    if (typingTimer) clearTimeout(typingTimer);
-    isTyping = false;
-    
-    currentBotMessageDiv = addMessage("", 'bot'); // Empty initially
-    
-    // Show typing indicator or just waiting state
-    const loadingIcon = document.createElement('div');
-    loadingIcon.className = 'typing-indicator';
-    loadingIcon.innerHTML = `
-        <div class="typing-dot"></div>
-        <div class="typing-dot"></div>
-        <div class="typing-dot"></div>
-    `;
-    currentBotMessageDiv.querySelector('.message-content').appendChild(loadingIcon);
+    // Fallback timeout if no response comes back
+    if (responseTimer) clearTimeout(responseTimer);
+    responseTimer = setTimeout(() => {
+        if (isGenerating && currentBotMessageDiv) {
+            const contentDiv = currentBotMessageDiv.querySelector('.message-content');
+            contentDiv.innerHTML = "<span style='color:#e53e3e'>Máy chủ phản hồi chậm hoặc mất kết nối. Vui lòng thử lại.</span>";
+            isGenerating = false;
+            updateSendButtonState();
+        }
+    }, 20000);
 }
 
 // Add Message to UI
@@ -611,9 +725,15 @@ function handleResponse(data) {
     const contentDiv = currentBotMessageDiv.querySelector('.message-content');
 
     if (data.type === 'stream') {
-        // Remove loading icon if it's the first chunk AND we haven't started typing yet
-        if (currentBotMessageContent === "" && !isTyping && typingQueue.length === 0 && pendingDisplayQueue.length === 0) {
-            contentDiv.innerHTML = "";
+        if (responseTimer) { clearTimeout(responseTimer); responseTimer = null; }
+        // Ensure typing area exists; keep any progress list
+        const typingIcon = contentDiv.querySelector('.typing-indicator');
+        if (typingIcon) typingIcon.remove();
+        let answerDiv = contentDiv.querySelector('.final-answer');
+        if (!answerDiv) {
+            answerDiv = document.createElement('div');
+            answerDiv.className = 'final-answer';
+            contentDiv.appendChild(answerDiv);
         }
         
         // TTS Streaming Hook
@@ -629,8 +749,29 @@ function handleResponse(data) {
             }
         }
     } 
+    else if (data.type === 'start') {
+        if (responseTimer) { clearTimeout(responseTimer); responseTimer = null; }
+    }
     else if (data.type === 'end') {
+        if (responseTimer) { clearTimeout(responseTimer); responseTimer = null; }
         isStreamFinished = true;
+        // Allow user to send tiếp ngay sau khi luồng kết thúc,
+        // kể cả khi TTS còn đang phát lại
+        isGenerating = false;
+        updateSendButtonState();
+        // Mark last progress step as done and stop spinner
+        const steps = contentDiv.querySelector('.progress-steps');
+        if (steps) {
+            const last = steps.lastElementChild;
+            if (last && !last.classList.contains('done')) {
+                last.classList.add('done');
+                const icon = last.querySelector('i');
+                if (icon) {
+                    icon.classList.remove('fa-spinner','fa-spin');
+                    icon.classList.add('fa-check');
+                }
+            }
+        }
         // TTS Flush Hook
         if (isTTSEnabled) {
             flushTTSBuffer();
@@ -642,9 +783,36 @@ function handleResponse(data) {
         }
     }
     else if (data.type === 'error') {
+        if (responseTimer) { clearTimeout(responseTimer); responseTimer = null; }
         contentDiv.innerHTML += `<br><span style="color: red;">Error: ${data.content}</span>`;
         isGenerating = false;
+        updateSendButtonState();
         typingQueue = [];
+    }
+    else if (data.type === 'progress') {
+        if (responseTimer) { clearTimeout(responseTimer); responseTimer = null; }
+        // Show step-by-step progress to reduce impatience
+        const typingIcon = contentDiv.querySelector('.typing-indicator');
+        if (typingIcon) typingIcon.remove();
+        let steps = contentDiv.querySelector('.progress-steps');
+        if (!steps) {
+            steps = document.createElement('div');
+            steps.className = 'progress-steps';
+            contentDiv.appendChild(steps);
+        }
+        const last = steps.lastElementChild;
+        if (last && !last.classList.contains('done')) {
+            last.classList.add('done');
+            const icon = last.querySelector('i');
+            if (icon) {
+                icon.classList.remove('fa-spinner','fa-spin');
+                icon.classList.add('fa-check');
+            }
+        }
+        const step = document.createElement('div');
+        step.className = 'progress-step';
+        step.innerHTML = `<i class="fas fa-spinner fa-spin"></i> ${data.text || 'Đang xử lý...'}`;
+        steps.appendChild(step);
     }
 }
 
@@ -673,7 +841,8 @@ function processTypingQueue() {
         if (currentBotMessageDiv) {
             const contentDiv = currentBotMessageDiv.querySelector('.message-content');
             // Re-render Markdown
-            contentDiv.innerHTML = marked.parse(currentBotMessageContent);
+            const answerDiv = contentDiv.querySelector('.final-answer') || contentDiv;
+            answerDiv.innerHTML = marked.parse(currentBotMessageContent);
             scrollToBottom();
         }
         
