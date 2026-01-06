@@ -1,0 +1,16 @@
+fastapi
+uvicorn[standard]
+python-dotenv
+websockets
+ollama
+langchain
+langchain-community
+langchain-huggingface
+sentence-transformers
+faiss-cpu
+beautifulsoup4
+requests
+aiohttp
+numpy
+Pillow
+edge-tts

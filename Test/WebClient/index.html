@@ -1,0 +1,116 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Kagri AI - Trợ lý Nông nghiệp</title>
+    <link href="libs/css/all.min.css" rel="stylesheet">
+    <script src="libs/js/marked.min.js"></script>
+    <script src="libs/js/tf.min.js"></script>
+    <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+    <div class="main-container">
+        <!-- Modal Selection -->
+        <div id="selection-modal" class="modal" style="display: none;">
+            <div class="modal-content">
+                <h3>Xác nhận ảnh</h3>
+                <p>Bạn muốn làm gì với ảnh này?</p>
+                <div class="modal-actions">
+                    <button id="btn-diagnose" class="btn-primary">Chẩn đoán bệnh cây sầu riêng</button>
+                    <button id="btn-incorrect" class="btn-secondary">Không đúng</button>
+                </div>
+            </div>
+        </div>
+
+        <!-- Sidebar (Optional for future, currently hidden on mobile) -->
+        <aside class="sidebar">
+            <div class="sidebar-header">
+                <i class="fas fa-leaf logo-icon"></i>
+                <h2>Kagri AI</h2>
+            </div>
+            <div class="sidebar-content">
+                <div class="info-card">
+                    <h3>Về KAGRI</h3>
+                    <p><i class="fas fa-map-marker-alt"></i> Trâu Quỳ, Gia Lâm, Hà Nội</p>
+                    <p><i class="fas fa-phone"></i> 0985.562.582</p>
+                    <p><i class="fas fa-envelope"></i> contact@kagri.vn</p>
+                </div>
+            </div>
+        </aside>
+
+        <!-- Chat Area -->
+        <main class="chat-area">
+            <header class="chat-header">
+                <div class="header-info">
+                    <div class="avatar-bot">
+                        <i class="fas fa-robot"></i>
+                    </div>
+                    <div>
+                        <h3>Trợ lý KAGRI</h3>
+                        <div class="status">
+                            <span id="status-dot" class="dot disconnected"></span>
+                            <span id="status-text">Đang kết nối...</span>
+                        </div>
+                    </div>
+                </div>
+                <div class="header-actions">
+                    <button class="icon-btn" id="tts-toggle-btn" title="Bật/Tắt Đọc Giọng Nói" onclick="toggleTTS()">
+                        <i class="fas fa-volume-mute" id="tts-icon"></i>
+                    </button>
+                    <button class="icon-btn" title="Xóa lịch sử" onclick="clearChat()">
+                        <i class="fas fa-trash-alt"></i>
+                    </button>
+                </div>
+            </header>
+
+            <div class="chat-messages" id="chat-messages">
+                <!-- Welcome Message -->
+                <div class="message bot welcome-message">
+                    <div class="message-content">
+                        <p>Xin chào! Tôi là <strong>Kagri AI</strong>.</p>
+                        <p>Tôi có thể giúp bạn tra cứu thông tin sản phẩm, kỹ thuật canh tác và giải đáp thắc mắc về nông nghiệp.</p>
+                    </div>
+                </div>
+                
+                <!-- Quick Suggestions -->
+                <div class="suggestions-container" id="suggestions">
+                    <button class="suggestion-chip" onclick="sendSuggestion('Thông tin công ty')">
+                        🏢 Thông tin công ty
+                    </button>
+                    <button class="suggestion-chip" onclick="sendSuggestion('Danh sách sản phẩm trị rầy')">
+                        🐛 Sản phẩm trị rầy
+                    </button>
+                    <button class="suggestion-chip" onclick="sendSuggestion('Tư vấn kỹ thuật bón phân')">
+                        🌱 Kỹ thuật bón phân
+                    </button>
+                    <button class="suggestion-chip" onclick="sendSuggestion('Các sản phẩm mới nhất')">
+                        🆕 Sản phẩm mới
+                    </button>
+                </div>
+            </div>
+
+            <div class="chat-input-container">
+                <div class="image-preview" id="image-preview"></div>
+                <div class="input-wrapper">
+                    <label for="image-upload" class="attach-btn" title="Gửi ảnh">
+                        <i class="fas fa-image"></i>
+                    </label>
+                    <input type="file" id="image-upload" accept="image/*" hidden>
+                    
+                    <textarea id="message-input" placeholder="Nhập câu hỏi của bạn..." rows="1"></textarea>
+                    
+                    <button id="send-btn" class="send-btn">
+                        <i class="fas fa-paper-plane"></i>
+                    </button>
+                </div>
+                <div class="footer-text">
+                    Kagri AI có thể mắc lỗi. Hãy kiểm tra lại thông tin quan trọng.
+                </div>
+            </div>
+        </main>
+    </div>
+
+    <script src="app.js?v=4"></script>
+</body>
+</html>
