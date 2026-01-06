@@ -8,7 +8,7 @@ import json
 
 class LLMEngine:
     def __init__(self):
-        self.model_name = "qwen2.5:7b"
+        self.model_name = settings.MODEL_NAME
         self.client = ollama.AsyncClient()
         self.model = True # Assume true, check later or let it fail gracefully
 

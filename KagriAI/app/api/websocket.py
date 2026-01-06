@@ -18,6 +18,9 @@ router = APIRouter()
 class ConnectionManager:
     def __init__(self):
         self.active_connections: list[WebSocket] = []
+        self.semaphore = asyncio.Semaphore(settings.WS_MAX_CONCURRENCY)
+        self.max_queue = settings.WS_MAX_QUEUE
+        self.waiting = 0
 
     async def connect(self, websocket: WebSocket):
         await websocket.accept()
@@ -67,13 +70,7 @@ THÔNG TIN ĐƯỢC CUNG CẤP (CONTEXT):
 @router.websocket("/ws/kagri-ai")
 async def websocket_endpoint(websocket: WebSocket, session_id: str = "default"):
     await manager.connect(websocket)
-    
-    # Init history if new session
-    if session_id not in history_store:
-        history_store[session_id] = {
-            "turns": [],
-            "meta": {"last_product_code": None} # Store metadata like last mentioned product
-        }
+    used_ids = set()
     
     try:
         while True:
@@ -85,17 +82,36 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str = "default"):
             except Exception:
                 parsed = None
             
-            # Ensure session exists in history_store
-            if session_id not in history_store:
-                history_store[session_id] = {
+            if not isinstance(parsed, dict) or not parsed.get("id"):
+                await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
+                continue
+            request_id = str(parsed.get("id"))
+            used_ids.add(request_id)
+            async def send(payload: dict):
+                payload["id"] = request_id
+                await manager.send_json(payload, websocket)
+            acquired = False
+            try:
+                manager.semaphore.acquire_nowait()
+                acquired = True
+            except Exception:
+                if manager.waiting >= manager.max_queue:
+                    await send({"type": "error", "content": "Máy chủ từ chối: quá nhiều yêu cầu"})
+                    await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
+                    continue
+                manager.waiting += 1
+                await manager.semaphore.acquire()
+                manager.waiting -= 1
+                acquired = True
+            
+            if request_id not in history_store:
+                history_store[request_id] = {
                     "turns": [],
                     "meta": {"last_product_code": None}
                 }
 
-            # 1. Get Context (Hybrid Search)
-            # Retrieve last_product_code from session meta
-            last_code = history_store[session_id]["meta"].get("last_product_code")
-            
+            last_code = history_store[request_id]["meta"].get("last_product_code")
+            user_text = parsed.get("text", "") if isinstance(parsed, dict) else data
             if isinstance(parsed, dict) and parsed.get("type") == "image_query" and parsed.get("image_base64"):
                 try:
                     disease_name = vision_engine.predict(parsed.get("image_base64"))
@@ -103,21 +119,24 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str = "default"):
                         f"Cây của bạn đang bị {disease_name}. "
                         "Vui lòng liên hệ công ty theo số điện thoại 0985 562 582 để được hướng dẫn hoặc truy cập website https://kagri.vn"
                     )
-                    await manager.send_json({"type": "start"}, websocket)
-                    await manager.send_json({"type": "stream", "content": text_reply}, websocket)
-                    await manager.send_json({"type": "end"}, websocket)
-                    history_store[session_id]["turns"].append({"user": parsed.get("text", ""), "ai": text_reply})
-                    if len(history_store[session_id]["turns"]) > settings.MAX_TURNS:
-                        history_store[session_id]["turns"].pop(0)
+                    await send({"type": "start"})
+                    await send({"type": "stream", "content": text_reply})
+                    await send({"type": "end"})
+                    history_store[request_id]["turns"].append({"user": user_text, "ai": text_reply})
+                    if len(history_store[request_id]["turns"]) > settings.MAX_TURNS:
+                        history_store[request_id]["turns"].pop(0)
                 except Exception as e:
                     print(f"Vision error: {e}")
-                    await manager.send_json({"type": "error", "content": "Lỗi xử lý ảnh: " + str(e)}, websocket)
+                    await send({"type": "error", "content": "Lỗi xử lý ảnh: " + str(e)})
+                if acquired:
+                    manager.semaphore.release()
                 continue
 
             # --- CUSTOM HANDLER FOR TIME/DATE ---
-            lower_data = data.lower().strip()
+            lower_data = user_text.lower().strip()
             time_keywords = ["mấy giờ", "ngày bao nhiêu", "hôm nay là", "thời gian", "ngày mấy", "giờ nào"]
-            is_time_query = any(k in lower_data for k in time_keywords)
+            lunar_keywords = ["âm lịch", "lịch âm", "ngày âm", "hôm nay âm", "hôm nay âm lịch"]
+            is_time_query = any(k in lower_data for k in time_keywords) or any(k in lower_data for k in lunar_keywords)
             
             nums = re.findall(r"\d{1,4}", lower_data)
             am_keywords = ["âm", "am"]
@@ -148,38 +167,44 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str = "default"):
                     else:
                         is_lunar = has_am and not has_duong
                     result_text = time_service.convert_lunar_solar(date_str, is_lunar=is_lunar)
-                    await manager.send_json({"type": "start"}, websocket)
-                    await manager.send_json({"type": "stream", "content": result_text}, websocket)
-                    await manager.send_json({"type": "end"}, websocket)
-                    history_store[session_id]["turns"].append({"user": data, "ai": result_text})
-                    if len(history_store[session_id]["turns"]) > settings.MAX_TURNS:
-                        history_store[session_id]["turns"].pop(0)
+                    await send({"type": "start"})
+                    await send({"type": "stream", "content": result_text})
+                    await send({"type": "end"})
+                    history_store[request_id]["turns"].append({"user": user_text, "ai": result_text})
+                    if len(history_store[request_id]["turns"]) > settings.MAX_TURNS:
+                        history_store[request_id]["turns"].pop(0)
+                    if acquired:
+                        manager.semaphore.release()
                     continue
                 except Exception as e:
-                    await manager.send_json({"type": "start"}, websocket)
-                    await manager.send_json({"type": "stream", "content": "Dạ, em không chuyển được ngày âm dương với định dạng vừa nhập ạ."}, websocket)
-                    await manager.send_json({"type": "end"}, websocket)
-                    history_store[session_id]["turns"].append({"user": data, "ai": "Không chuyển được ngày âm dương"})
-                    if len(history_store[session_id]["turns"]) > settings.MAX_TURNS:
-                        history_store[session_id]["turns"].pop(0)
+                    await send({"type": "start"})
+                    await send({"type": "stream", "content": "Dạ, em không chuyển được ngày âm dương với định dạng vừa nhập ạ."})
+                    await send({"type": "end"})
+                    history_store[request_id]["turns"].append({"user": user_text, "ai": "Không chuyển được ngày âm dương"})
+                    if len(history_store[request_id]["turns"]) > settings.MAX_TURNS:
+                        history_store[request_id]["turns"].pop(0)
+                    if acquired:
+                        manager.semaphore.release()
                     continue
             
             if (not is_convert_intent) and is_time_query:
                 try:
                     time_response = time_service.get_current_time_info()
-                    await manager.send_json({"type": "start"}, websocket)
-                    await manager.send_json({"type": "stream", "content": time_response}, websocket)
-                    await manager.send_json({"type": "end"}, websocket)
+                    await send({"type": "start"})
+                    await send({"type": "stream", "content": time_response})
+                    await send({"type": "end"})
                     
-                    history_store[session_id]["turns"].append({"user": data, "ai": time_response})
-                    if len(history_store[session_id]["turns"]) > settings.MAX_TURNS:
-                        history_store[session_id]["turns"].pop(0)
+                    history_store[request_id]["turns"].append({"user": user_text, "ai": time_response})
+                    if len(history_store[request_id]["turns"]) > settings.MAX_TURNS:
+                        history_store[request_id]["turns"].pop(0)
+                    if acquired:
+                        manager.semaphore.release()
                     continue
                 except Exception as e:
                     print(f"Time service error: {e}")
 
             # --- CUSTOM HANDLER FOR DIAGNOSIS INTENT ---
-            lower_data = data.lower().strip()
+            lower_data = user_text.lower().strip()
             diagnose_keywords = [
                 "chẩn đoán", "chẩn đoán bệnh", "chẩn đoán bệnh cây trồng",
                 "chẩn đoán qua ảnh", "chan doan", "chan doan benh", "chan doan qua anh"
@@ -195,22 +220,24 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str = "default"):
                         "- Ảnh cần rõ nét, tập trung vết bệnh, ánh sáng tốt, khoảng cách 30–50 cm.\n"
                         "- Nếu bệnh ngoài danh sách, kết quả có thể chưa chính xác. Liên hệ hotline 0985.562.582 hoặc kagri.vn để được tư vấn chuyên gia."
                     )
-                    await manager.send_json({"type": "start"}, websocket)
+                    await send({"type": "start"})
                     chunk_size = 100
                     for i in range(0, len(guide), chunk_size):
-                        await manager.send_json({"type": "stream", "content": guide[i:i+chunk_size]}, websocket)
+                        await send({"type": "stream", "content": guide[i:i+chunk_size]})
                         await asyncio.sleep(0.02)
-                    await manager.send_json({"type": "end"}, websocket)
+                    await send({"type": "end"})
                     
-                    history_store[session_id]["turns"].append({"user": data, "ai": guide})
-                    if len(history_store[session_id]["turns"]) > settings.MAX_TURNS:
-                        history_store[session_id]["turns"].pop(0)
+                    history_store[request_id]["turns"].append({"user": user_text, "ai": guide})
+                    if len(history_store[request_id]["turns"]) > settings.MAX_TURNS:
+                        history_store[request_id]["turns"].pop(0)
+                    if acquired:
+                        manager.semaphore.release()
                     continue
                 except Exception as e:
                     print(f"Diagnosis guide error: {e}")
 
             # --- CUSTOM HANDLER FOR MARKET PRICE ---
-            lower_data = data.lower().strip()
+            lower_data = user_text.lower().strip()
             price_keywords = ["giá nông sản", "giá cà phê", "giá tiêu", "giá lúa", "giá gạo", "giá thóc", "giá sầu riêng", "giá heo", "giá lợn"]
             is_price_query = any(k in lower_data for k in price_keywords)
             
@@ -239,24 +266,26 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str = "default"):
                     price_response = market_price_service.get_prices(lower_data)
                     
                     
-                    await manager.send_json({"type": "start"}, websocket)
+                    await send({"type": "start"})
                     
                     chunk_size = 80
                     for i in range(0, len(price_response), chunk_size):
-                        await manager.send_json({"type": "stream", "content": price_response[i:i+chunk_size]}, websocket)
+                        await send({"type": "stream", "content": price_response[i:i+chunk_size]})
                         await asyncio.sleep(0.02)
                     
-                    await manager.send_json({"type": "end"}, websocket)
+                    await send({"type": "end"})
                     
-                    history_store[session_id]["turns"].append({"user": data, "ai": price_response})
-                    if len(history_store[session_id]["turns"]) > settings.MAX_TURNS:
-                        history_store[session_id]["turns"].pop(0)
+                    history_store[request_id]["turns"].append({"user": user_text, "ai": price_response})
+                    if len(history_store[request_id]["turns"]) > settings.MAX_TURNS:
+                        history_store[request_id]["turns"].pop(0)
+                    if acquired:
+                        manager.semaphore.release()
                     continue
                 except Exception as e:
                     print(f"Market price error: {e}")
 
             # --- CUSTOM HANDLER FOR PRODUCT LIST ---
-            lower_data = data.lower().strip()
+            lower_data = user_text.lower().strip()
             product_intent_keywords = ["các sản phẩm", "danh sách sản phẩm", "sản phẩm của công ty", "tất cả sản phẩm", "sản phẩm đang có"]
             is_product_list = any(k in lower_data for k in product_intent_keywords)
             
@@ -294,36 +323,39 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str = "default"):
                             
                         response_text += "Mời anh/chị xem thêm danh sách đầy đủ tại website hoặc hỏi em về loại bệnh cụ thể để em tư vấn sản phẩm phù hợp nhất ạ."
                         
-                        await manager.send_json({"type": "start"}, websocket)
+                        await send({"type": "start"})
                         chunk_size = 50
                         for i in range(0, len(response_text), chunk_size):
-                            await manager.send_json({"type": "stream", "content": response_text[i:i+chunk_size]}, websocket)
+                            await send({"type": "stream", "content": response_text[i:i+chunk_size]})
                             await asyncio.sleep(0.02)
                         
-                        await manager.send_json({"type": "end"}, websocket)
+                        await send({"type": "end"})
                         
-                        history_store[session_id]["turns"].append({"user": data, "ai": response_text})
-                        if len(history_store[session_id]["turns"]) > settings.MAX_TURNS:
-                            history_store[session_id]["turns"].pop(0)
-                            
+                        history_store[request_id]["turns"].append({"user": user_text, "ai": response_text})
+                        if len(history_store[request_id]["turns"]) > settings.MAX_TURNS:
+                            history_store[request_id]["turns"].pop(0)
+                        if acquired:
+                            manager.semaphore.release()
                         continue
                 except Exception as e:
                     print(f"Product list handler error: {e}")
 
             try:
-                context_result = hybrid_engine.get_context(data, last_product_code=last_code)
+                context_result = hybrid_engine.get_context(user_text, last_product_code=last_code)
                 context_text = context_result["text"]
                 found_code = context_result["product_code"]
             except Exception as e:
                 print(f"Context error: {e}")
-                await manager.send_json({"type": "error", "content": "Lỗi lấy ngữ cảnh: " + str(e)}, websocket)
-                await manager.send_json({"type": "end"}, websocket)
+                await send({"type": "error", "content": "Lỗi lấy ngữ cảnh: " + str(e)})
+                await send({"type": "end"})
+                if acquired:
+                    manager.semaphore.release()
                 continue
             
             # Update last_product_code if new product found
             if found_code:
-                 history_store[session_id]["meta"]["last_product_code"] = found_code
-                 print(f"Session {session_id} updated last_product_code: {found_code}")
+                 history_store[request_id]["meta"]["last_product_code"] = found_code
+                 print(f"Session {request_id} updated last_product_code: {found_code}")
             
             # 2. Build Prompt with ChatML format (escape braces in context to avoid .format errors)
             try:
@@ -335,38 +367,39 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str = "default"):
             
             full_prompt = f"<|im_start|>system\n{system_msg}<|im_end|>\n"
             
-            for turn in history_store[session_id]["turns"]:
+            for turn in history_store[request_id]["turns"]:
                 full_prompt += f"<|im_start|>user\n{turn['user']}<|im_end|>\n"
                 full_prompt += f"<|im_start|>assistant\n{turn['ai']}<|im_end|>\n"
             
-            full_prompt += f"<|im_start|>user\n{data}\n<|im_end|>\n"
+            full_prompt += f"<|im_start|>user\n{user_text}\n<|im_end|>\n"
             full_prompt += "<|im_start|>assistant\n"
             
             # 3. Stream Response
             
-            await manager.send_json({"type": "start"}, websocket)
+            await send({"type": "start"})
             
             full_response = ""
             try:
                 async for chunk in llm_engine.generate_stream(full_prompt, max_tokens=1024):
                     if chunk["sentence"]:
-                        await manager.send_json({
+                        await send({
                             "type": "stream",
                             "content": chunk["sentence"]
-                        }, websocket)
+                        })
                         full_response += chunk["sentence"]
-                await manager.send_json({"type": "end"}, websocket)
+                await send({"type": "end"})
             except Exception as e:
-                await manager.send_json({"type": "error", "content": "Lỗi phản hồi AI: " + str(e)}, websocket)
-                await manager.send_json({"type": "end"}, websocket)
+                await send({"type": "error", "content": "Lỗi phản hồi AI: " + str(e)})
+                await send({"type": "end"})
             
-            # 4. Save to History
-            history_store[session_id]["turns"].append({"user": data, "ai": full_response})
-            if len(history_store[session_id]["turns"]) > settings.MAX_TURNS:
-                history_store[session_id]["turns"].pop(0)
+            history_store[request_id]["turns"].append({"user": user_text, "ai": full_response})
+            if len(history_store[request_id]["turns"]) > settings.MAX_TURNS:
+                history_store[request_id]["turns"].pop(0)
+            if acquired:
+                manager.semaphore.release()
                 
     except WebSocketDisconnect:
         manager.disconnect(websocket)
-        # Optional: Clean up history after timeout? For now keep it simple. 
-        if session_id in history_store:
-            del history_store[session_id]   
+        for rid in list(used_ids):
+            if rid in history_store:
+                del history_store[rid]

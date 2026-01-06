@@ -64,7 +64,19 @@ function toggleTTS() {
     }
 }
 
-function init() {
+async function loadClientIdConfig() {
+    try {
+        const cfg = await fetch('id_config.json').then(r => r.json());
+        if (cfg && typeof cfg.client_id === 'string' && cfg.client_id.trim()) {
+            conversationId = cfg.client_id.trim();
+            console.log('Loaded client_id from config:', conversationId);
+        }
+    } catch (e) {
+        console.warn('No id_config.json found or invalid. Using random id:', conversationId);
+    }
+}
+
+async function init() {
     // Configure Marked.js for proper line breaks
     if (typeof marked !== 'undefined') {
         marked.setOptions({
@@ -73,6 +85,7 @@ function init() {
         });
     }
 
+    await loadClientIdConfig();
     connectWebSocket();
     setupEventListeners();
     loadDiseaseModel();
@@ -658,21 +671,29 @@ function processMessageSend(content, imageToSend) {
     // Prepare Payload and send
     if (imageToSend) {
         const payload = {
+            id: conversationId,
             type: "image_query",
             text: content || "",
             image_base64: imageToSend,
             client_label: currentPredictedLabel
         };
+        const msg = JSON.stringify(payload);
         if (ws && ws.readyState === WebSocket.OPEN) {
-            ws.send(JSON.stringify(payload));
+            ws.send(msg);
         } else {
-            pendingOutbox.push(JSON.stringify(payload));
+            pendingOutbox.push(msg);
         }
     } else {
+        const payload = {
+            id: conversationId,
+            type: "text",
+            text: content
+        };
+        const msg = JSON.stringify(payload);
         if (ws && ws.readyState === WebSocket.OPEN) {
-            ws.send(content);
+            ws.send(msg);
         } else {
-            pendingOutbox.push(content);
+            pendingOutbox.push(msg);
         }
     }
     removeImage();

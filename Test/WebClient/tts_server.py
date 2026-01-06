@@ -20,7 +20,7 @@ app.add_middleware(
 
 # Vietnamese Voice Configuration
 # Options: vi-VN-NamMinhNeural (Male), vi-VN-HoaiMyNeural (Female)
-VOICE = "vi-VN-NamMinhNeural" 
+VOICE = os.getenv("TTS_VOICE", "vi-VN-NamMinhNeural")
 
 @app.get("/")
 def home():
