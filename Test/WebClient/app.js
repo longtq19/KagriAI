@@ -1,12 +1,12 @@
 // Configuration
 const __params = new URLSearchParams(window.location.search);
-// const WS_URL = __params.get('ws') || 'ws://localhost:8000/ws/chat';
-// const TTS_URL_BASE = __params.get('tts') || 'http://localhost:5050';
-
-const WS_URL = __params.get('ws') || 'ws://192.168.88.111:8000/ws/kagriai';
+const hostname = window.location.hostname || 'localhost';
+const backendPort = __params.get('port') || '8000';
+const httpScheme = window.location.protocol === 'https:' ? 'https' : 'http';
+const wsScheme = window.location.protocol === 'https:' ? 'wss' : 'ws';
+const BACKEND_URL = __params.get('backend') || `${httpScheme}://${hostname}:${backendPort}`;
+const WS_URL = __params.get('ws') || `${wsScheme}://${hostname}:${backendPort}/ws/kagriai`;
 console.log('Connecting to WebSocket:', WS_URL);
-// const MODEL_URL = __params.get('model') || 'http://localhost:8000/models/durain/model.json';
-// const META_URL = __params.get('meta') || 'http://localhost:8000/models/durain/metadata.json';
 
 // DOM Elements
 const chatMessages = document.getElementById('chat-messages');
@@ -32,7 +32,6 @@ let conversationId = null; // Removed random ID generation
 let currentImageBase64 = null;
 let isDiagnosisMode = false;
 let isGenerating = false;
-const BACKEND_URL = __params.get('backend') || 'http://192.168.88.111:8000';
 let currentBotMessageDiv = null;
 let currentBotMessageContent = "";
 let typingQueue = [];

@@ -4,7 +4,7 @@ import websockets
 import os
 
 async def run():
-    host = os.getenv("LAN_HOST", os.getenv("HOST", "192.168.88.111"))
+    host = os.getenv("LAN_HOST", os.getenv("HOST", "198.168.88.111"))
     port = int(os.getenv("PORT", "8000"))
     uri = f"ws://{host}:{port}/ws/kagriai"
     async with websockets.connect(uri) as ws:

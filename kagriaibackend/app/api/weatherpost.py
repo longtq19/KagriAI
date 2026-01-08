@@ -1,6 +1,7 @@
 from typing import Optional
 from fastapi import APIRouter
 from pydantic import BaseModel
+from app.services.weather_ai import enrich
 
 router = APIRouter()
 
@@ -25,21 +26,5 @@ class WeatherRequest(BaseModel):
 @router.post("/api/kagriai/weather")
 async def recommendations_weather(req: WeatherRequest):
     items = req.data.getRecommenedWeather if req and req.data else []
-    warnings = []
-    recommendations = []
-    warning_set = set()
-    recommend_set = set()
-    for it in items:
-        w = (it.warning or "").strip()
-        r = (it.recomment or "").strip()
-        if w:
-            if w not in warning_set:
-                warning_set.add(w)
-                warnings.append(w)
-        if r:
-            if r not in recommend_set:
-                recommend_set.add(r)
-                recommendations.append(r)
-    warnings_out = [{"id": i + 1, "content": w} for i, w in enumerate(warnings)]
-    recommendations_out = [{"id": i + 1, "content": r} for i, r in enumerate(recommendations)]
-    return {"Warnings": warnings_out, "Recommendations": recommendations_out}
+    data = enrich([x.model_dump() for x in items])
+    return data
