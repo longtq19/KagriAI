@@ -1,6 +1,6 @@
 import sqlite3
 import os
-from typing import List
+from typing import List, Optional
 
 # Define DB path
 DB_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data", "db")
@@ -8,9 +8,15 @@ if not os.path.exists(DB_DIR):
     os.makedirs(DB_DIR)
 
 DB_PATH = os.path.join(DB_DIR, "kagri.db")
+CHAT_DB_PATH = os.path.join(DB_DIR, "chat.db")
 
 def get_db_connection():
     conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    return conn
+
+def get_chat_db_connection():
+    conn = sqlite3.connect(CHAT_DB_PATH)
     conn.row_factory = sqlite3.Row
     return conn
 
@@ -71,6 +77,15 @@ def init_db():
     
     ensure_columns("company_info", ["vision", "mission", "core_values", "slogan", "factories", "license_tax"])
     ensure_columns("experts", ["degree"])
+    # Remove chat tables from main DB if exist
+    existing_tables = [row[0] for row in cursor.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()]
+    for t in ["chat_sessions", "chat_turns"]:
+        if t in existing_tables:
+            try:
+                cursor.execute(f"DROP TABLE {t}")
+                print(f"Dropped legacy {t} from main DB")
+            except Exception as e:
+                print(f"Failed to drop {t}: {e}")
 
     # Remove expert_team column from company_info if it exists
     existing_company_cols = [row[1] for row in cursor.execute("PRAGMA table_info(company_info)").fetchall()]
@@ -180,3 +195,128 @@ def init_db():
 
 if __name__ == "__main__":
     init_db()
+    
+def save_chat_session(session_id: str, turns: list, last_product_code: Optional[str]):
+    conn = get_chat_db_connection()
+    cursor = conn.cursor()
+    cursor.execute('''
+        INSERT INTO chat_sessions (session_id, last_product_code, created_at, updated_at)
+        VALUES (?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+        ON CONFLICT(session_id) DO UPDATE SET
+            last_product_code=excluded.last_product_code,
+            updated_at=CURRENT_TIMESTAMP
+    ''', (session_id, last_product_code))
+    cursor.execute('DELETE FROM chat_turns WHERE session_id = ?', (session_id,))
+    for idx, t in enumerate(turns):
+        cursor.execute('''
+            INSERT INTO chat_turns (session_id, turn_index, user, ai, user_image_path)
+            VALUES (?, ?, ?, ?, ?)
+        ''', (session_id, idx, t.get("user", ""), t.get("ai", ""), t.get("user_image_path")))
+    conn.commit()
+    conn.close()
+    
+def load_chat_session(session_id: str):
+    conn = get_chat_db_connection()
+    cursor = conn.cursor()
+    session_row = cursor.execute('SELECT session_id, last_product_code FROM chat_sessions WHERE session_id = ?', (session_id,)).fetchone()
+    if not session_row:
+        conn.close()
+        return None
+    turn_rows = cursor.execute('SELECT user, ai FROM chat_turns WHERE session_id = ? ORDER BY turn_index ASC', (session_id,)).fetchall()
+    conn.close()
+    turns = [{"user": r["user"], "ai": r["ai"]} for r in turn_rows]
+    return {"turns": turns, "meta": {"last_product_code": session_row["last_product_code"]}}
+
+def append_chat_turn(session_id: str, user: str, ai: str, user_image_path: Optional[str] = None, last_product_code: Optional[str] = None):
+    conn = get_chat_db_connection()
+    cursor = conn.cursor()
+    cursor.execute('''
+        INSERT INTO chat_sessions (session_id, last_product_code, created_at, updated_at)
+        VALUES (?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+        ON CONFLICT(session_id) DO UPDATE SET
+            last_product_code=COALESCE(excluded.last_product_code, chat_sessions.last_product_code),
+            updated_at=CURRENT_TIMESTAMP
+    ''', (session_id, last_product_code))
+    next_idx_row = cursor.execute('SELECT COALESCE(MAX(turn_index), -1) + 1 AS next_idx FROM chat_turns WHERE session_id = ?', (session_id,)).fetchone()
+    next_idx = next_idx_row["next_idx"] if next_idx_row else 0
+    cursor.execute('''
+        INSERT INTO chat_turns (session_id, turn_index, user, ai, user_image_path)
+        VALUES (?, ?, ?, ?, ?)
+    ''', (session_id, next_idx, user, ai, user_image_path))
+    conn.commit()
+    conn.close()
+
+def append_user_turn(session_id: str, user: str, user_image_path: Optional[str] = None, last_product_code: Optional[str] = None) -> int:
+    conn = get_chat_db_connection()
+    cursor = conn.cursor()
+    cursor.execute('''
+        INSERT INTO chat_sessions (session_id, last_product_code, created_at, updated_at)
+        VALUES (?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+        ON CONFLICT(session_id) DO UPDATE SET
+            last_product_code=COALESCE(excluded.last_product_code, chat_sessions.last_product_code),
+            updated_at=CURRENT_TIMESTAMP
+    ''', (session_id, last_product_code))
+    next_idx_row = cursor.execute('SELECT COALESCE(MAX(turn_index), -1) + 1 AS next_idx FROM chat_turns WHERE session_id = ?', (session_id,)).fetchone()
+    next_idx = next_idx_row["next_idx"] if next_idx_row else 0
+    cursor.execute('''
+        INSERT INTO chat_turns (session_id, turn_index, user, ai, user_image_path)
+        VALUES (?, ?, ?, ?, ?)
+    ''', (session_id, next_idx, user, "", user_image_path))
+    conn.commit()
+    conn.close()
+    return next_idx
+
+def update_ai_turn(session_id: str, turn_index: int, ai: str):
+    conn = get_chat_db_connection()
+    cursor = conn.cursor()
+    cursor.execute('''
+        UPDATE chat_turns
+        SET ai = ?
+        WHERE session_id = ? AND turn_index = ?
+    ''', (ai, session_id, turn_index))
+    conn.commit()
+    conn.close()
+
+def update_user_image_path(session_id: str, turn_index: int, user_image_path: str):
+    conn = get_chat_db_connection()
+    cursor = conn.cursor()
+    cursor.execute('''
+        UPDATE chat_turns
+        SET user_image_path = ?
+        WHERE session_id = ? AND turn_index = ?
+    ''', (user_image_path, session_id, turn_index))
+    conn.commit()
+    conn.close()
+
+def init_chat_db():
+    conn = get_chat_db_connection()
+    cursor = conn.cursor()
+    cursor.execute('''
+    CREATE TABLE IF NOT EXISTS chat_sessions (
+        session_id TEXT PRIMARY KEY,
+        last_product_code TEXT,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    )
+    ''')
+    cursor.execute('''
+    CREATE TABLE IF NOT EXISTS chat_turns (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        session_id TEXT,
+        turn_index INTEGER,
+        user TEXT,
+        ai TEXT,
+        user_image_path TEXT,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    )
+    ''')
+    # Ensure column exists
+    existing = [row[1] for row in cursor.execute("PRAGMA table_info(chat_turns)").fetchall()]
+    if "user_image_path" not in existing:
+        try:
+            cursor.execute("ALTER TABLE chat_turns ADD COLUMN user_image_path TEXT")
+        except Exception as e:
+            print(f"Skip adding column chat_turns.user_image_path: {e}")
+    conn.commit()
+    conn.close()
+    print(f"Chat database initialized at {CHAT_DB_PATH}")

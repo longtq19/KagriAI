@@ -1,9 +1,12 @@
 import asyncio
 import json
 import websockets
+import os
 
 async def run():
-    uri = "ws://localhost:8000/ws/kagri-ai"
+    host = os.getenv("LAN_HOST", os.getenv("HOST", "192.168.88.111"))
+    port = int(os.getenv("PORT", "8000"))
+    uri = f"ws://{host}:{port}/ws/kagriai"
     async with websockets.connect(uri) as ws:
         await ws.send(json.dumps({"id": "smoke-1", "text": "mấy giờ"}))
         msgs = []

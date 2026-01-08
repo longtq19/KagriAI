@@ -2,4 +2,4 @@ env/
 venv/
 .venv/
 node_modules/
-kagriaibackend/app/data/db/*.db
+kagriaibackend/app/data/db/chat.db

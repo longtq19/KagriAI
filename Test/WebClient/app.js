@@ -3,7 +3,7 @@ const __params = new URLSearchParams(window.location.search);
 // const WS_URL = __params.get('ws') || 'ws://localhost:8000/ws/chat';
 // const TTS_URL_BASE = __params.get('tts') || 'http://localhost:5050';
 
-const WS_URL = __params.get('ws') || 'ws://192.168.88.111:8000/ws/kagri-ai';
+const WS_URL = __params.get('ws') || 'ws://192.168.88.111:8000/ws/kagriai';
 console.log('Connecting to WebSocket:', WS_URL);
 // const MODEL_URL = __params.get('model') || 'http://localhost:8000/models/durain/model.json';
 // const META_URL = __params.get('meta') || 'http://localhost:8000/models/durain/metadata.json';
@@ -32,7 +32,7 @@ let conversationId = null; // Removed random ID generation
 let currentImageBase64 = null;
 let isDiagnosisMode = false;
 let isGenerating = false;
-const BACKEND_URL = "http://192.168.88.111:8000"; // Define backend URL
+const BACKEND_URL = __params.get('backend') || 'http://192.168.88.111:8000';
 let currentBotMessageDiv = null;
 let currentBotMessageContent = "";
 let typingQueue = [];
@@ -43,15 +43,71 @@ let currentPredictedLabel = null;
 
 // Initialize
 async function loadClientIdConfig() {
+    let saved = null;
     try {
-        const cfg = await fetch('id_config.json').then(r => r.json());
-        if (cfg && typeof cfg.client_id === 'string' && cfg.client_id.trim()) {
-            conversationId = cfg.client_id.trim();
-            console.log('Loaded client_id from config:', conversationId);
-        }
+        saved = localStorage.getItem('client_id');
     } catch (e) {
-        console.error('No id_config.json found or invalid. Connection may fail without a valid ID.');
+        saved = null;
     }
+    if (!saved || typeof saved !== 'string' || !saved.trim()) {
+        let entered = '';
+        const canPrompt = typeof window.prompt === 'function';
+        if (canPrompt) {
+            try {
+                while (!entered) {
+                    entered = window.prompt('Nhập ID khách hàng để bắt đầu:', '') || '';
+                    entered = entered.trim();
+                    if (!entered) {
+                        alert('ID không được để trống. Vui lòng nhập lại.');
+                    }
+                }
+            } catch (e) {
+                entered = '';
+            }
+        }
+        if (!entered) {
+            entered = await new Promise((resolve) => {
+                const overlay = document.createElement('div');
+                overlay.style.position = 'fixed';
+                overlay.style.inset = '0';
+                overlay.style.background = 'rgba(0,0,0,0.4)';
+                overlay.style.display = 'flex';
+                overlay.style.alignItems = 'center';
+                overlay.style.justifyContent = 'center';
+                overlay.style.zIndex = '9999';
+                const box = document.createElement('div');
+                box.style.background = '#fff';
+                box.style.padding = '16px';
+                box.style.borderRadius = '8px';
+                box.style.width = '90%';
+                box.style.maxWidth = '420px';
+                box.innerHTML = `
+                    <h3 style="margin:0 0 8px 0;">Nhập ID khách hàng để bắt đầu</h3>
+                    <input id="client-id-input" type="text" placeholder="VD: KH-123" style="width:100%;padding:8px;border:1px solid #ccc;border-radius:6px;"/>
+                    <div style="margin-top:12px;text-align:right;">
+                        <button id="client-id-submit" style="padding:8px 12px;border:none;background:#2b7cff;color:#fff;border-radius:6px;cursor:pointer;">Xác nhận</button>
+                    </div>
+                `;
+                overlay.appendChild(box);
+                document.body.appendChild(overlay);
+                box.querySelector('#client-id-submit').addEventListener('click', () => {
+                    const val = box.querySelector('#client-id-input').value.trim();
+                    if (!val) {
+                        alert('ID không được để trống.');
+                        return;
+                    }
+                    overlay.remove();
+                    resolve(val);
+                });
+            });
+        }
+        try {
+            localStorage.setItem('client_id', entered);
+        } catch (e) {}
+        saved = entered;
+    }
+    conversationId = saved.trim();
+    console.log('Client ID:', conversationId);
 }
 
 async function init() {
@@ -221,7 +277,7 @@ async function diagnoseDisease(treeType) {
         const response = await fetch(`${BACKEND_URL}/api/diagnose/${treeType}`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ image: currentImageBase64 })
+            body: JSON.stringify({ image: currentImageBase64, session_id: conversationId, text: content })
         });
         
         const result = await response.json();

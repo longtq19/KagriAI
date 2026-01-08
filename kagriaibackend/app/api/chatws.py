@@ -5,9 +5,13 @@ from starlette.websockets import WebSocketState
 from app.services.llm_engine import llm_engine
 from app.services.hybrid_search import hybrid_engine
 from app.services.time_service import time_service
+from app.services.diagnosis import diagnosis_service
+import base64
+import os
+import uuid
 from app.services.market_price import market_price_service
 from app.core.config import settings
-from app.core.database import get_db_connection
+from app.core.database import get_db_connection, save_chat_session, load_chat_session, append_chat_turn, append_user_turn, update_ai_turn, update_user_image_path
 import random
 import re
 
@@ -17,9 +21,6 @@ router = APIRouter()
 class ConnectionManager:
     def __init__(self):
         self.active_connections: list[WebSocket] = []
-        self.semaphore = asyncio.Semaphore(settings.WS_MAX_CONCURRENCY)
-        self.max_queue = settings.WS_MAX_QUEUE
-        self.waiting = 0
     
     async def connect(self, websocket: WebSocket):
         if websocket.client_state != WebSocketState.CONNECTED:
@@ -42,6 +43,20 @@ manager = ConnectionManager()
 # In-memory history for simplicity (or use DB/Redis later)
 # Format: {session_id: [{"role": "user", "content": "..."}]}
 history_store = {}
+flush_tasks = {}
+
+def cancel_flush_task(session_id: str):
+    task = flush_tasks.pop(session_id, None)
+    if task and not task.done():
+        task.cancel()
+
+async def schedule_flush(session_id: str):
+    async def worker():
+        await asyncio.sleep(settings.WS_DISCONNECT_TTL_SECONDS)
+        if session_id in history_store:
+            del history_store[session_id]
+    t = asyncio.create_task(worker())
+    flush_tasks[session_id] = t
 
 SYSTEM_INSTRUCTION = """Bạn là trợ lý AI chuyên nghiệp của công ty KAGRI (Công ty Cổ phần Tập đoàn Nông nghiệp KAGRI). 
 Nhiệm vụ của bạn là hỗ trợ khách hàng trả lời các câu hỏi về sản phẩm nông nghiệp, phân bón, kỹ thuật trồng trọt và thông tin công ty.
@@ -67,7 +82,7 @@ THÔNG TIN ĐƯỢC CUNG CẤP (CONTEXT):
 {context}
 """
 
-@router.websocket("/ws/kagri-ai")
+@router.websocket("/ws/kagriai")
 async def websocket_endpoint(websocket: WebSocket, session_id: str = "default"):
     if websocket.client_state != WebSocketState.CONNECTED:
         await websocket.accept()
@@ -89,52 +104,113 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str = "default"):
                 continue
             request_id = str(parsed.get("id"))
             used_ids.add(request_id)
+            cancel_flush_task(request_id)
             async def send(payload: dict):
                 payload["id"] = request_id
                 await manager.send_json(payload, websocket)
-            acquired = False
-            try:
-                manager.semaphore.acquire_nowait()
-                acquired = True
-            except Exception:
-                # Removed queue limit rejection as per requirement
-                # if manager.waiting >= manager.max_queue:
-                #     await send({"type": "error", "content": "Máy chủ từ chối: quá nhiều yêu cầu"})
-                #     await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
-                #     continue
-                manager.waiting += 1
-                await manager.semaphore.acquire()
-                manager.waiting -= 1
-                acquired = True
-            
             if request_id not in history_store:
-                history_store[request_id] = {
-                    "turns": [],
-                    "meta": {"last_product_code": None}
-                }
+                loaded = load_chat_session(request_id)
+                if loaded:
+                    full_turns = loaded.get("turns", [])
+                    recent_turns = full_turns[-settings.MAX_TURNS:]
+                    history_store[request_id] = {
+                        "turns": recent_turns,
+                        "full_turns": full_turns,
+                        "meta": loaded.get("meta", {"last_product_code": None})
+                    }
+                else:
+                    history_store[request_id] = {
+                        "turns": [],
+                        "full_turns": [],
+                        "meta": {"last_product_code": None}
+                    }
 
             last_code = history_store[request_id]["meta"].get("last_product_code")
             user_text = parsed.get("text", "") if isinstance(parsed, dict) else data
+            turn_idx = None
+            # Save user turn immediately (text only for non-image; with [image] tag for image)
+            if isinstance(parsed, dict) and parsed.get("type") == "image_query":
+                turn_idx = append_user_turn(request_id, "[image] " + (user_text or ""), None, last_code)
+            else:
+                turn_idx = append_user_turn(request_id, user_text, None, last_code)
             if isinstance(parsed, dict) and parsed.get("type") == "image_query" and parsed.get("image_base64"):
                 try:
-                    # vision_engine has been removed.
-                    # Fallback or simple response
-                    text_reply = (
-                        "Dạ, hiện tại chức năng chẩn đoán qua ảnh trong cửa sổ chat đã được tắt. "
-                        "Mời anh/chị sử dụng công cụ chẩn đoán chuyên biệt hoặc liên hệ hotline 0985 562 582 ạ."
-                    )
                     await send({"type": "start"})
+                    plant_type = (parsed.get("plant_type") or "").lower().strip()
+                    if plant_type not in ("durian", "coffee"):
+                        await send({"type": "stream", "content": "Dạ, anh/chị vui lòng chọn loại cây: 'durian' hoặc 'coffee' ạ."})
+                        await send({"type": "end"})
+                        history_store[request_id]["full_turns"].append({"user": "[image] " + user_text, "ai": "Thiếu loại cây"})
+                        history_store[request_id]["turns"].append({"user": "[image] " + user_text, "ai": "Thiếu loại cây"})
+                        update_ai_turn(request_id, turn_idx, "Thiếu loại cây")
+                        if len(history_store[request_id]["turns"]) > settings.MAX_TURNS:
+                            history_store[request_id]["turns"].pop(0)
+                        continue
+                    
+                    # Save user image to disk for persistence
+                    base_dir = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
+                    uploads_dir = os.path.join(base_dir, "app", "data", "uploads")
+                    os.makedirs(uploads_dir, exist_ok=True)
+                    filename = f"{request_id}-{uuid.uuid4().hex}.png"
+                    img_path_abs = os.path.join(uploads_dir, filename)
+                    
+                    img_b64 = parsed.get("image_base64")
+                    if "," in img_b64:
+                        img_b64 = img_b64.split(",", 1)[1]
+                    with open(img_path_abs, "wb") as f:
+                        f.write(base64.b64decode(img_b64))
+                    update_user_image_path(request_id, turn_idx, img_path_abs)
+                    
+                    # Run diagnosis
+                    result = diagnosis_service.predict(parsed.get("image_base64"), plant_type)
+                    if result.get("error"):
+                        await send({"type": "stream", "content": "Dạ, ảnh chưa hợp lệ hoặc mô hình chưa sẵn sàng ạ."})
+                        await send({"type": "end"})
+                        history_store[request_id]["full_turns"].append({"user": "[image] " + user_text, "ai": "Ảnh không hợp lệ", "user_image_path": img_path_abs})
+                        history_store[request_id]["turns"].append({"user": "[image] " + user_text, "ai": "Ảnh không hợp lệ"})
+                        update_ai_turn(request_id, turn_idx, "Ảnh không hợp lệ")
+                        if len(history_store[request_id]["turns"]) > settings.MAX_TURNS:
+                            history_store[request_id]["turns"].pop(0)
+                        continue
+                    
+                    preds = result.get("predictions", [])
+                    if not preds:
+                        text_reply = "Dạ, em chưa phát hiện được bệnh rõ ràng từ ảnh này. Anh/chị vui lòng thử ảnh khác rõ nét hơn ạ."
+                        await send({"type": "stream", "content": text_reply})
+                        await send({"type": "end"})
+                        history_store[request_id]["full_turns"].append({"user": "[image] " + user_text, "ai": text_reply, "user_image_path": img_path_abs})
+                        history_store[request_id]["turns"].append({"user": "[image] " + user_text, "ai": text_reply})
+                        update_ai_turn(request_id, turn_idx, text_reply)
+                        if len(history_store[request_id]["turns"]) > settings.MAX_TURNS:
+                            history_store[request_id]["turns"].pop(0)
+                        continue
+                    
+                    # Build text reply and attach example images of top prediction
+                    top = preds[0]
+                    lines = []
+                    lines.append(f"Dạ, ảnh cho thấy khả năng cao: {top['name']} ({top['probability']}%).")
+                    if len(preds) > 1:
+                        lines.append("Các khả năng tiếp theo:")
+                        for p in preds[1:]:
+                            lines.append(f"- {p['name']} ({p['probability']}%)")
+                    lines.append("Em gửi kèm ảnh mẫu bệnh để anh/chị đối chiếu ạ.")
+                    text_reply = "\n".join(lines)
+                    
                     await send({"type": "stream", "content": text_reply})
+                    if top.get("images"):
+                        await send({"type": "images", "images": top["images"]})
                     await send({"type": "end"})
-                    history_store[request_id]["turns"].append({"user": user_text, "ai": text_reply})
+                    
+                    history_store[request_id]["full_turns"].append({"user": "[image] " + user_text, "ai": text_reply, "user_image_path": img_path_abs})
+                    history_store[request_id]["turns"].append({"user": "[image] " + user_text, "ai": text_reply})
+                    update_ai_turn(request_id, turn_idx, text_reply)
                     if len(history_store[request_id]["turns"]) > settings.MAX_TURNS:
                         history_store[request_id]["turns"].pop(0)
+                    continue
                 except Exception as e:
-                    print(f"Vision error (disabled): {e}")
-                    await send({"type": "error", "content": "Chức năng chẩn đoán ảnh tạm thời không khả dụng."})
-                if acquired:
-                    manager.semaphore.release()
-                continue
+                    print(f"Image diagnose error: {e}")
+                    await send({"type": "error", "content": "Lỗi chẩn đoán ảnh ạ."})
+                    continue
 
             # --- CUSTOM HANDLER FOR TIME/DATE ---
             lower_data = user_text.lower().strip()
@@ -145,7 +221,7 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str = "default"):
             nums = re.findall(r"\d{1,4}", lower_data)
             am_keywords = ["âm", "am"]
             duong_keywords = ["dương", "duong"]
-            convert_keywords = ["chuyển", "chuyen", "đổi", "doi", "convert", "->", "sang", "bao nhiêu dương", "bao nhieu duong", "là ngày dương", "la ngay duong"]
+            convert_keywords = ["chuyển", "chuyen", "đổi", "doi", "convert", "->", "sang", "bao nhiêu dương", "bao nhieu duong", "là ngày dương", "la ngay duong", "thứ mấy", "thu may", "thứ"]
             has_am = any(k in lower_data for k in am_keywords)
             has_duong = any(k in lower_data for k in duong_keywords)
             has_convert_kw = any(k in lower_data for k in convert_keywords)
@@ -170,40 +246,57 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str = "default"):
                         is_lunar = idx_am <= idx_duong
                     else:
                         is_lunar = has_am and not has_duong
-                    result_text = time_service.convert_lunar_solar(date_str, is_lunar=is_lunar)
+                    result_text = time_service.get_date_info(date_str, is_lunar=is_lunar)
                     await send({"type": "start"})
                     await send({"type": "stream", "content": result_text})
                     await send({"type": "end"})
+                    history_store[request_id]["full_turns"].append({"user": user_text, "ai": result_text})
                     history_store[request_id]["turns"].append({"user": user_text, "ai": result_text})
+                    update_ai_turn(request_id, turn_idx, result_text)
                     if len(history_store[request_id]["turns"]) > settings.MAX_TURNS:
                         history_store[request_id]["turns"].pop(0)
-                    if acquired:
-                        manager.semaphore.release()
                     continue
                 except Exception as e:
                     await send({"type": "start"})
                     await send({"type": "stream", "content": "Dạ, em không chuyển được ngày âm dương với định dạng vừa nhập ạ."})
                     await send({"type": "end"})
+                    history_store[request_id]["full_turns"].append({"user": user_text, "ai": "Không chuyển được ngày âm dương"})
                     history_store[request_id]["turns"].append({"user": user_text, "ai": "Không chuyển được ngày âm dương"})
+                    update_ai_turn(request_id, turn_idx, "Không chuyển được ngày âm dương")
                     if len(history_store[request_id]["turns"]) > settings.MAX_TURNS:
                         history_store[request_id]["turns"].pop(0)
-                    if acquired:
-                        manager.semaphore.release()
                     continue
             
             if (not is_convert_intent) and is_time_query:
                 try:
-                    time_response = time_service.get_current_time_info()
-                    await send({"type": "start"})
-                    await send({"type": "stream", "content": time_response})
-                    await send({"type": "end"})
-                    
-                    history_store[request_id]["turns"].append({"user": user_text, "ai": time_response})
-                    if len(history_store[request_id]["turns"]) > settings.MAX_TURNS:
-                        history_store[request_id]["turns"].pop(0)
-                    if acquired:
-                        manager.semaphore.release()
-                    continue
+                    if len(nums) >= 3:
+                        a, b, c = nums[0], nums[1], nums[2]
+                        if len(a) == 4:
+                            date_str = f"{a}/{b}/{c}"
+                        else:
+                            date_str = f"{a}/{b}/{c}"
+                        is_lunar_flag = has_am and not has_duong
+                        date_info = time_service.get_date_info(date_str, is_lunar=is_lunar_flag)
+                        await send({"type": "start"})
+                        await send({"type": "stream", "content": date_info})
+                        await send({"type": "end"})
+                        history_store[request_id]["full_turns"].append({"user": user_text, "ai": date_info})
+                        history_store[request_id]["turns"].append({"user": user_text, "ai": date_info})
+                        update_ai_turn(request_id, turn_idx, date_info)
+                        if len(history_store[request_id]["turns"]) > settings.MAX_TURNS:
+                            history_store[request_id]["turns"].pop(0)
+                        continue
+                    else:
+                        time_response = time_service.get_current_time_info()
+                        await send({"type": "start"})
+                        await send({"type": "stream", "content": time_response})
+                        await send({"type": "end"})
+                        history_store[request_id]["full_turns"].append({"user": user_text, "ai": time_response})
+                        history_store[request_id]["turns"].append({"user": user_text, "ai": time_response})
+                        update_ai_turn(request_id, turn_idx, time_response)
+                        if len(history_store[request_id]["turns"]) > settings.MAX_TURNS:
+                            history_store[request_id]["turns"].pop(0)
+                        continue
                 except Exception as e:
                     print(f"Time service error: {e}")
 
@@ -231,11 +324,11 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str = "default"):
                         await asyncio.sleep(0.02)
                     await send({"type": "end"})
                     
+                    history_store[request_id]["full_turns"].append({"user": user_text, "ai": guide})
                     history_store[request_id]["turns"].append({"user": user_text, "ai": guide})
+                    update_ai_turn(request_id, turn_idx, guide)
                     if len(history_store[request_id]["turns"]) > settings.MAX_TURNS:
                         history_store[request_id]["turns"].pop(0)
-                    if acquired:
-                        manager.semaphore.release()
                     continue
                 except Exception as e:
                     print(f"Diagnosis guide error: {e}")
@@ -279,11 +372,11 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str = "default"):
                     
                     await send({"type": "end"})
                     
+                    history_store[request_id]["full_turns"].append({"user": user_text, "ai": price_response})
                     history_store[request_id]["turns"].append({"user": user_text, "ai": price_response})
+                    update_ai_turn(request_id, turn_idx, price_response)
                     if len(history_store[request_id]["turns"]) > settings.MAX_TURNS:
                         history_store[request_id]["turns"].pop(0)
-                    if acquired:
-                        manager.semaphore.release()
                     continue
                 except Exception as e:
                     print(f"Market price error: {e}")
@@ -335,11 +428,11 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str = "default"):
                         
                         await send({"type": "end"})
                         
+                        history_store[request_id]["full_turns"].append({"user": user_text, "ai": response_text})
                         history_store[request_id]["turns"].append({"user": user_text, "ai": response_text})
+                        update_ai_turn(request_id, turn_idx, response_text)
                         if len(history_store[request_id]["turns"]) > settings.MAX_TURNS:
                             history_store[request_id]["turns"].pop(0)
-                        if acquired:
-                            manager.semaphore.release()
                         continue
                 except Exception as e:
                     print(f"Product list handler error: {e}")
@@ -352,8 +445,6 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str = "default"):
                 print(f"Context error: {e}")
                 await send({"type": "error", "content": "Lỗi lấy ngữ cảnh: " + str(e)})
                 await send({"type": "end"})
-                if acquired:
-                    manager.semaphore.release()
                 continue
             
             # Update last_product_code if new product found
@@ -396,15 +487,13 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str = "default"):
                 await send({"type": "error", "content": "Lỗi phản hồi AI: " + str(e)})
                 await send({"type": "end"})
             
+            history_store[request_id]["full_turns"].append({"user": user_text, "ai": full_response})
             history_store[request_id]["turns"].append({"user": user_text, "ai": full_response})
+            update_ai_turn(request_id, turn_idx, full_response)
             if len(history_store[request_id]["turns"]) > settings.MAX_TURNS:
                 history_store[request_id]["turns"].pop(0)
-            if acquired:
-                manager.semaphore.release()
                 
     except WebSocketDisconnect:
         manager.disconnect(websocket)
-        # Removed history deletion to persist context across reconnections
-        # for rid in list(used_ids):
-        #     if rid in history_store:
-        #         del history_store[rid]
+        for rid in list(used_ids):
+            await schedule_flush(rid)

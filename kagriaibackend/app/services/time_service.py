@@ -54,47 +54,58 @@ class TimeService:
         return response
 
     def convert_lunar_solar(self, date_str: str, is_lunar: bool) -> str:
+        return self.get_date_info(date_str, is_lunar)
+
+    def get_date_info(self, date_str: str, is_lunar: bool) -> str:
         try:
             import re
             import datetime as dt
             cleaned = date_str.strip().replace(" ", "/").replace("-", "/").replace(".", "/")
-            # Accept formats: dd/mm/yyyy, d/m/yyyy, yyyy/mm/dd
             nums = re.findall(r"\d{1,4}", cleaned)
             if len(nums) < 3:
                 return "Dạ, em không thể chuyển đổi ngày tháng. Vui lòng nhập đúng định dạng dd/mm/yyyy."
             a, b, c = nums[0], nums[1], nums[2]
-            if len(a) == 4:  # yyyy/mm/dd
-                year = int(a)
-                month = int(b)
-                day = int(c)
-            else:  # dd/mm/yyyy
-                day = int(a)
-                month = int(b)
-                year = int(c)
+            if len(a) == 4:
+                year = int(a); month = int(b); day = int(c)
+            else:
+                day = int(a); month = int(b); year = int(c)
             if year < 100:
                 year = 2000 + year
+            solar_date = None
+            lunar_date = None
             if is_lunar:
                 try:
-                    lunar = Lunar(year, month, day)
-                    solar = Converter.Lunar2Solar(lunar)
-                    # verify round-trip
-                    lv = Converter.Solar2Lunar(Solar(solar.year, solar.month, solar.day))
-                    if lv.day == day and lv.month == month:
-                        return f"ngày {solar.day} tháng {solar.month} năm {solar.year} (Dương lịch)"
+                    ln = Lunar(year, month, day)
+                    sl = Converter.Lunar2Solar(ln)
+                    solar_date = dt.date(sl.year, sl.month, sl.day)
+                    lunar_date = Converter.Solar2Lunar(Solar(sl.year, sl.month, sl.day))
                 except Exception:
-                    pass
-                # fallback: search nearby solar dates to match lunar day/month
-                start = dt.date(year - 1, 12, 1)
-                for i in range(180):
-                    d = start + dt.timedelta(days=i)
-                    lv = Converter.Solar2Lunar(Solar(d.year, d.month, d.day))
-                    if lv.day == day and lv.month == month:
-                        return f"ngày {d.day} tháng {d.month} năm {d.year} (Dương lịch)"
-                return "Dạ, em chưa chuyển được ngày âm sang dương. Anh/chị vui lòng nhập lại giúp em ạ."
+                    start = dt.date(max(1, year - 1), 1 if month == 1 else 12, 1)
+                    for i in range(365):
+                        d = start + dt.timedelta(days=i)
+                        lv = Converter.Solar2Lunar(Solar(d.year, d.month, d.day))
+                        if lv.day == day and lv.month == month:
+                            solar_date = d
+                            lunar_date = lv
+                            break
+                    if solar_date is None:
+                        return "Dạ, em chưa chuyển được ngày âm sang dương. Anh/chị vui lòng nhập lại giúp em ạ."
             else:
-                solar = Solar(year, month, day)
-                lunar = Converter.Solar2Lunar(solar)
-                return f"ngày {lunar.day} tháng {lunar.month} năm {lunar.year} (Âm lịch)"
+                sl = Solar(year, month, day)
+                solar_date = dt.date(year, month, day)
+                lunar_date = Converter.Solar2Lunar(sl)
+            wd = solar_date.weekday()
+            wd_idx = 0 if wd == 6 else wd + 1
+            day_of_week = self.weekdays[wd_idx]
+            season = self._get_season(solar_date.month)
+            gregorian = f"ngày {solar_date.day} tháng {solar_date.month} năm {solar_date.year}"
+            lunar_str = f"ngày {lunar_date.day} tháng {lunar_date.month} năm {lunar_date.year} (Âm lịch)"
+            return (
+                f"**{day_of_week}**.\n"
+                f"- **Dương lịch**: {gregorian}.\n"
+                f"- **Âm lịch**: {lunar_str}.\n"
+                f"- **Mùa**: {season}."
+            )
         except Exception:
             return "Dạ, em không thể chuyển đổi ngày tháng. Vui lòng nhập đúng định dạng dd/mm/yyyy."
 
